@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Stock Viewer (Finnhub)</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 40px;
+      background-color: #f4f4f4;
+    }
+    h1 {
+      text-align: center;
+    }
+    .form-group {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    input, button, select {
+      padding: 10px;
+      font-size: 16px;
+      margin: 5px;
+    }
+    #statusMessage {
+      text-align: center;
+      font-weight: bold;
+      color: #333;
+      margin-bottom: 10px;
+    }
+    #currentPrice {
+      text-align: center;
+      font-size: 24px;
+      margin: 20px 0;
+    }
+    .chart-container {
+      width: 90%;
+      max-width: 800px;
+      margin: 0 auto 40px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Stock Viewer (Finnhub)</h1>
+
+  <div id="statusMessage"></div>
+
+  <div class="form-group">
+    <input type="text" id="apiKey" placeholder="Enter Finnhub API Key" />
+    <button onclick="saveApiKey()">Save API Key</button>
+    <button onclick="clearApiKey()">Clear API Key</button>
+  </div>
+
+  <div class="form-group">
+    <input type="text" id="ticker" placeholder="Enter Stock Ticker (e.g., AAPL)" />
+    <button onclick="fetchStockData()">Submit</button>
+  </div>
+
+  <div class="form-group">
+    <label for="recentTickers">Recent:</label>
+    <select id="recentTickers" onchange="selectRecentTicker()">
+      <option value="">-- Select --</option>
+    </select>
+  </div>
+
+  <div id="currentPrice"></div>
+
+  <div class="chart-container">
+    <canvas id="chart5Day"></canvas>
+  </div>
+  <div class="chart-container">
+    <canvas id="chart1Year"></canvas>
+  </div>
+  <div class="chart-container">
+    <canvas id="chart3Year"></canvas>
+  </div>
+
+  <script>
+    function setCookie(name, value, days) {
+      const d = new Date();
+      d.setTime(d.getTime() + (days*24*60*60*1000));
+      document.cookie = name + "=" + encodeURIComponent(value) + ";expires=" + d.toUTCString() + ";path=/";
+    }
+
+    function getCookie(name) {
+      const ca = decodeURIComponent(document.cookie).split(';');
+      for (let c of ca) {
+        while (c.charAt(0) === ' ') c = c.substring(1);
+        if (c.indexOf(name + "=") === 0) return c.substring(name.length + 1);
+      }
+      return "";
+    }
+
+    function deleteCookie(name) {
+      document.cookie = name + "=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+    }
+
+    function saveApiKey() {
+      const key = document.getElementById('apiKey').value.trim();
+      if (key) {
+        setCookie('finnhubApiKey', key, 30);
+        showStatus('✅ API Key saved.');
+      } else {
+        showStatus('❌ Please enter a valid API Key.');
+      }
+    }
+
+    function clearApiKey() {
+      deleteCookie('finnhubApiKey');
+      showStatus('🧹 API Key cleared.');
+      document.getElementById('apiKey').value = '';
+    }
+
+    function showStatus(message) {
+      document.getElementById('statusMessage').textContent = message;
+    }
+
+    function addTickerToHistory(ticker) {
+      let history = JSON.parse(getCookie('tickerHistory') || '[]');
+      if (!history.includes(ticker)) {
+        history.unshift(ticker);
+        if (history.length > 10) history = history.slice(0, 10);
+        setCookie('tickerHistory', JSON.stringify(history), 30);
+      }
+      populateRecentTickers();
+    }
+
+    function populateRecentTickers() {
+      const history = JSON.parse(getCookie('tickerHistory') || '[]');
+      const select = document.getElementById('recentTickers');
+      select.innerHTML = '<option value="">-- Select --</option>';
+      history.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t;
+        opt.textContent = t;
+        select.appendChild(opt);
+      });
+    }
+
+    function selectRecentTicker() {
+      const ticker = document.getElementById('recentTickers').value;
+      if (ticker) {
+        document.getElementById('ticker').value = ticker;
+        fetchStockData();
+      }
+    }
+
+    async function fetchStockData() {
+      const symbol = document.getElementById('ticker').value.toUpperCase();
+      const apiKey = getCookie('finnhubApiKey');
+
+      if (!apiKey) {
+        showStatus('⚠️ Missing API Key. Please save one first.');
+        return;
+      }
+
+      if (!symbol) {
+        showStatus('❌ Please enter a stock ticker.');
+        return;
+      }
+
+      try {
+        const quoteRes = await fetch(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${apiKey}`);
+        const quoteData = await quoteRes.json();
+
+        if (!quoteData.c) {
+          showStatus('❌ Invalid ticker or no data available.');
+          return;
+        }
+
+        document.getElementById('currentPrice').textContent =
+          `Current Price of ${symbol}: $${quoteData.c.toFixed(2)}`;
+
+        const now = Math.floor(Date.now() / 1000);
+        const oneDay = 86400;
+        const data5Day = await fetchHistory(symbol, now - 5 * oneDay, now, '60', apiKey);
+        const data1Year = await fetchHistory(symbol, now - 365 * oneDay, now, 'D', apiKey);
+        const data3Year = await fetchHistory(symbol, now - 3 * 365 * oneDay, now, 'W', apiKey);
+
+        renderChart('chart5Day', `${symbol} - Last 5 Days`, data5Day);
+        renderChart('chart1Year', `${symbol} - Last 1 Year`, data1Year);
+        renderChart('chart3Year', `${symbol} - Last 3 Years`, data3Year);
+
+        addTickerToHistory(symbol);
+        showStatus(`✅ Data loaded for ${symbol}`);
+      } catch (err) {
+        console.error(err);
+        showStatus('❌ Error fetching data. Please check your API key or network.');
+      }
+    }
+
+    async function fetchHistory(symbol, from, to, resolution, apiKey) {
+      const url = `https://finnhub.io/api/v1/stock/candle?symbol=${symbol}&resolution=${resolution}&from=${from}&to=${to}&token=${apiKey}`;
+      const res = await fetch(url);
+      const data = await res.json();
+
+      if (data.s !== 'ok') throw new Error('Failed to load historical data');
+
+      return data.t.map((timestamp, i) => ({
+        date: new Date(timestamp * 1000).toLocaleDateString(),
+        close: data.c[i]
+      }));
+    }
+
+    function renderChart(canvasId, title, data) {
+      const ctx = document.getElementById(canvasId).getContext('2d');
+      if (window[canvasId]) window[canvasId].destroy();
+
+      window[canvasId] = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: data.map(d => d.date),
+          datasets: [{
+            label: title,
+            data: data.map(d => d.close),
+            borderColor: 'blue',
+            fill: false
+          }]
+        },
+        options: {
+          responsive: true,
+          scales: {
+            x: { title: { display: true, text: 'Date' } },
+            y: { title: { display: true, text: 'Price (USD)' } }
+          }
+        }
+      });
+    }
+
+    // On load
+    window.onload = function () {
+      const savedKey = getCookie('finnhubApiKey');
+      if (savedKey) {
+        document.getElementById('apiKey').value = savedKey;
+        showStatus('✅ API Key loaded from cookie.');
+      } else {
+        showStatus('⚠️ API Key not found. Please save one.');
+      }
+      populateRecentTickers();
+    };
+  </script>
+</body>
+</html>
